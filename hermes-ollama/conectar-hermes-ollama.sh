@@ -13,6 +13,7 @@
 # O script é idempotente: pode rodar de novo sem quebrar nada.
 # =============================================================================
 set -euo pipefail
+trap 'rc=$?; [ $rc -ne 0 ] && printf "\n\033[1;31mERRO: o script parou na linha %s (código %s).\033[0m\n" "$LINENO" "$rc"' EXIT
 
 log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m    OK: %s\033[0m\n' "$*"; }
@@ -39,8 +40,25 @@ mkdir -p "$HERMES_DATA"
 ok "pasta de dados do Hermes no host: $HERMES_DATA"
 
 # IP pelo qual o container enxerga o host (gateway da rede Docker dele)
-DOCKER_GW="$(docker inspect "$HERMES_CT" --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' | head -n1)"
-[ -n "$DOCKER_GW" ] || DOCKER_GW="172.17.0.1"
+is_ipv4() { [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; }
+DOCKER_GW=""
+NET_MODE="$(docker inspect "$HERMES_CT" --format '{{.HostConfig.NetworkMode}}' 2>/dev/null || true)"
+if [ "$NET_MODE" = "host" ]; then
+  DOCKER_GW="127.0.0.1"
+else
+  for net in $(docker inspect "$HERMES_CT" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null); do
+    for gw in $(docker network inspect "$net" --format '{{range .IPAM.Config}}{{.Gateway}} {{end}}' 2>/dev/null); do
+      if is_ipv4 "$gw"; then DOCKER_GW="$gw"; break 2; fi
+    done
+    # rede sem gateway declarado: usa o .1 da sub-rede do container
+    cip="$(docker inspect "$HERMES_CT" --format "{{(index .NetworkSettings.Networks \"$net\").IPAddress}}" 2>/dev/null || true)"
+    if is_ipv4 "$cip"; then DOCKER_GW="${cip%.*}.1"; break; fi
+  done
+fi
+if ! is_ipv4 "$DOCKER_GW"; then
+  DOCKER_GW="$(ip -4 addr show docker0 2>/dev/null | awk '/inet / {sub("/.*","",$2); print $2; exit}')"
+fi
+is_ipv4 "$DOCKER_GW" || DOCKER_GW="172.17.0.1"
 ok "o container alcança o host em: $DOCKER_GW"
 
 # -----------------------------------------------------------------------------
@@ -119,13 +137,26 @@ ollama create "$MODEL_CTX" -f "$TMP_MF"
 rm -f "$TMP_MF"
 ok "variante criada"
 
-# Teste rápido do endpoint OpenAI-compatível
+# Teste do endpoint OpenAI-compatível (primeira carga na CPU pode levar 1-2 min)
 log "Testando o modelo pelo endpoint OpenAI-compatível"
-curl -fsS "http://127.0.0.1:11434/v1/chat/completions" \
-  -H "Content-Type: application/json" \
-  -d "{\"model\":\"$MODEL_CTX\",\"messages\":[{\"role\":\"user\",\"content\":\"Responda só: ok\"}],\"max_tokens\":5}" \
-  | head -c 300; echo
-ok "modelo responde"
+TEST_OK=0
+for tentativa in 1 2 3; do
+  systemctl is-active --quiet ollama || { warn "ollama parado, reiniciando"; systemctl restart ollama; sleep 5; }
+  RESP="$(curl -sS --max-time 600 "http://127.0.0.1:11434/v1/chat/completions" \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"$MODEL_CTX\",\"messages\":[{\"role\":\"user\",\"content\":\"Responda só: ok\"}],\"max_tokens\":5}" 2>&1 || true)"
+  if printf '%s' "$RESP" | grep -q '"choices"'; then TEST_OK=1; break; fi
+  warn "tentativa $tentativa falhou: $(printf '%s' "$RESP" | head -c 200)"
+  sleep 10
+done
+if [ "$TEST_OK" -eq 1 ]; then
+  printf '%s\n' "$RESP" | head -c 300; echo
+  ok "modelo responde"
+else
+  warn "o modelo não respondeu. Últimas linhas do log do Ollama:"
+  journalctl -u ollama -n 30 --no-pager || true
+  warn "Vou gravar a configuração do Hermes mesmo assim; teste depois com: docker exec -it $HERMES_CT hermes"
+fi
 
 # -----------------------------------------------------------------------------
 # 6. Apontar o Hermes para o Ollama

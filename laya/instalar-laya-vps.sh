@@ -11,6 +11,7 @@
 #   LAYA_PORT=8000  LAYA_MODELS=multilingual  LAYA_THREADS=2
 # =============================================================================
 set -euo pipefail
+trap 'rc=$?; [ $rc -ne 0 ] && printf "\n\033[1;31mERRO: o script parou na linha %s (código %s).\033[0m\n" "$LINENO" "$rc"' EXIT
 
 log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m    OK: %s\033[0m\n' "$*"; }
@@ -61,7 +62,7 @@ ENVFILE="$LAYA_HOME/env/laya.env"
 if [ -f "$ENVFILE" ] && grep -q '^LAYA_API_KEY=' "$ENVFILE"; then
   LAYA_API_KEY="$(grep '^LAYA_API_KEY=' "$ENVFILE" | cut -d= -f2-)"
 else
-  LAYA_API_KEY="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48)"
+  LAYA_API_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
 fi
 cat > "$ENVFILE" <<CONF
 LAYA_HOST=0.0.0.0
