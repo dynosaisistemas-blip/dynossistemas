@@ -32,7 +32,11 @@ aplicar_perfil() {
   log "Perfil '$nome' ($home)"
   [ -f "$cfg" ] || { warn "sem config.yaml, pulando"; return; }
 
-  if HERMES_HOME="$home" "$HERMES_BIN" doctor 2>/dev/null | grep -q 'OpenAI Codex auth (logged in)'; then
+  # 'hermes doctor' devolve erro quando lista avisos; por isso captura com '|| true'
+  # e limpa códigos de cor antes de procurar a linha do Codex.
+  local saida
+  saida="$(HERMES_HOME="$home" "$HERMES_BIN" doctor 2>/dev/null || true)"
+  if printf '%s' "$saida" | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -q 'Codex auth (logged in)'; then
     ok "Codex logado neste perfil"
   else
     warn "Codex NÃO está logado neste perfil. Vou pular. Para logar:"
