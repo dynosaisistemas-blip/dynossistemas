@@ -169,8 +169,16 @@ else
   ok "Hermes em: $HERMES_DATA ${HERMES_CT:+(container $HERMES_CT)}"
   # URL que o Hermes usa: dentro de container -> IP do gateway docker; nativo -> localhost
   if [ -n "$HERMES_CT" ]; then
-    GW="$(docker inspect "$HERMES_CT" --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' | head -n1)"
-    LAYA_URL="http://${GW:-172.17.0.1}:$LAYA_PORT"
+    is_ipv4() { [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; }
+    GW=""
+    for net in $(docker inspect "$HERMES_CT" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null); do
+      for g in $(docker network inspect "$net" --format '{{range .IPAM.Config}}{{.Gateway}} {{end}}' 2>/dev/null); do
+        if is_ipv4 "$g"; then GW="$g"; break 2; fi
+      done
+    done
+    is_ipv4 "$GW" || GW="$(ip -4 addr show docker0 2>/dev/null | awk '/inet / {sub("/.*","",$2); print $2; exit}')"
+    is_ipv4 "$GW" || GW="172.17.0.1"
+    LAYA_URL="http://$GW:$LAYA_PORT"
   else
     LAYA_URL="http://127.0.0.1:$LAYA_PORT"
   fi
