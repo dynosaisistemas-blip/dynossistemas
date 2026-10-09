@@ -183,7 +183,11 @@ else
     is_ipv4 "$GW" || GW="172.17.0.1"
     LAYA_URL="http://$GW:$LAYA_PORT"
   else
-    LAYA_URL="http://127.0.0.1:$LAYA_PORT"
+    # Hermes nativo, mas a sandbox de terminal dele é um container Docker:
+    # o IP do docker0 é alcançável tanto do host quanto de dentro da sandbox.
+    GW="$(ip -4 addr show docker0 2>/dev/null | awk '/inet / {sub("/.*","",$2); print $2; exit}')"
+    [ -n "$GW" ] || GW="127.0.0.1"
+    LAYA_URL="http://$GW:$LAYA_PORT"
   fi
   mkdir -p "$HERMES_DATA/skills/laya"
   SKILL_SRC="$(dirname "$0")/hermes-skill/laya/SKILL.md"
@@ -199,18 +203,29 @@ name: laya
 description: Decisões tipadas rápidas e sem custo (classificar, pontuar, sim/não) usando o modelo Laya local. Use para triagem, roteamento, intenção, prioridade ou moderação de um texto. NÃO gera texto.
 ---
 # Laya: decisões tipadas locais
-Endpoint: `$LAYA_BASE_URL/v1/systemone`, header `Authorization: Bearer $LAYA_API_KEY` (ambos no .env).
+Endpoint: `__LAYA_URL__/v1/systemone`, header `Authorization: Bearer __LAYA_KEY__` (use literalmente; a sandbox não tem variáveis de ambiente).
 Tipos: `choice` (criteria = objeto opcao:descrição), `score` (criteria = lista ordenada), `noul` (sim/não).
 Exemplo:
-curl -s "$LAYA_BASE_URL/v1/systemone" -H "Authorization: Bearer $LAYA_API_KEY" -H "Content-Type: application/json" \
+curl -s "__LAYA_URL__/v1/systemone" -H "Authorization: Bearer __LAYA_KEY__" -H "Content-Type: application/json" \
   -d '{"state":{"body":"TEXTO"},"questions":{"setor":{"type":"choice","instructions":"Qual setor?","criteria":{"financeiro":"cobranças","tecnico":"bugs","outro":"resto"}}}}'
 Use `confidence`; abaixo de 0,6 decida você. Máximo ~20 opções por choice. Lote: POST /v1/systemone/batch com "states".
 SKILL
   fi
+  # grava URL e chave direto na skill (a sandbox Docker não vê o .env do host)
+  sed -i "s|__LAYA_URL__|$LAYA_URL|g; s|__LAYA_KEY__|$LAYA_API_KEY|g; s|\$LAYA_BASE_URL|$LAYA_URL|g; s|\$LAYA_API_KEY|$LAYA_API_KEY|g" "$HERMES_DATA/skills/laya/SKILL.md"
+  chmod 600 "$HERMES_DATA/skills/laya/SKILL.md"
   touch "$HERMES_DATA/.env"
   sed -i '/^LAYA_BASE_URL=/d;/^LAYA_API_KEY=/d' "$HERMES_DATA/.env"
   printf 'LAYA_BASE_URL=%s\nLAYA_API_KEY=%s\n' "$LAYA_URL" "$LAYA_API_KEY" >> "$HERMES_DATA/.env"
   ok "skill instalada em $HERMES_DATA/skills/laya e variáveis no .env (LAYA_BASE_URL=$LAYA_URL)"
+  SANDBOX="$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E '^hermes-' | head -n1 || true)"
+  if [ -n "$SANDBOX" ]; then
+    if docker exec "$SANDBOX" sh -c "curl -fsS -m 10 $LAYA_URL/health >/dev/null 2>&1 || python3 -c \"import urllib.request;urllib.request.urlopen('$LAYA_URL/health',timeout=10)\"" 2>/dev/null; then
+      ok "a sandbox do Hermes ($SANDBOX) alcança o Laya em $LAYA_URL"
+    else
+      warn "a sandbox $SANDBOX não alcançou $LAYA_URL/health; confira: ufw status | grep 8000"
+    fi
+  fi
   if [ -n "$HERMES_BIN" ]; then
     "$HERMES_BIN" gateway status >/dev/null 2>&1 && { "$HERMES_BIN" gateway restart >/dev/null 2>&1 && ok "gateway do Hermes reiniciado" || true; }
   elif [ -n "$HERMES_CT" ]; then

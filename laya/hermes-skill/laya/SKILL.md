@@ -9,8 +9,13 @@ O Laya (Convai Innovations) é um modelo System-1: recebe um **estado** (texto o
 e **perguntas tipadas** e devolve respostas com probabilidades calibradas em ~0,3 s na CPU.
 Não escreve texto. Use-o quando a tarefa é **decidir**, não **redigir**.
 
-Endpoint local (mesma VPS): `$LAYA_BASE_URL/v1/systemone` com `Authorization: Bearer $LAYA_API_KEY`.
-Ambas as variáveis estão no `.env` do Hermes.
+Endpoint (na própria VPS, alcançável do host e de dentro da sandbox Docker):
+
+- URL: `__LAYA_URL__/v1/systemone`
+- Header: `Authorization: Bearer __LAYA_KEY__`
+
+Use esses valores literalmente no comando. Não dependa de variáveis de ambiente
+(`LAYA_BASE_URL`/`LAYA_API_KEY`): dentro da sandbox elas não existem.
 
 ## Tipos de pergunta
 
@@ -23,8 +28,8 @@ Ambas as variáveis estão no `.env` do Hermes.
 ## Como chamar (terminal)
 
 ```bash
-curl -s "$LAYA_BASE_URL/v1/systemone" \
-  -H "Authorization: Bearer $LAYA_API_KEY" \
+curl -s "__LAYA_URL__/v1/systemone" \
+  -H "Authorization: Bearer __LAYA_KEY__" \
   -H "Content-Type: application/json" \
   -d '{
     "state": {"body": "Fui cobrado duas vezes em março. Quero o reembolso hoje ou cancelo o plano."},
