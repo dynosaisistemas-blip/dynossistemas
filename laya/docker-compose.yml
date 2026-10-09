@@ -1,0 +1,57 @@
+# Laya (Convai Innovations) como serviço HTTP na VPS, só CPU.
+# Projeto para o Docker Manager da Hostinger (hPanel -> VPS -> Docker Manager).
+#
+# Variáveis de ambiente do projeto (preencher no Docker Manager / API):
+#   LAYA_API_KEY=<chave longa aleatória>   # obrigatória
+#   LAYA_BIND=127.0.0.1                    # 127.0.0.1 = só a própria VPS
+#                                          # 172.17.0.1 = também os containers Docker (Hermes)
+#
+# Primeira subida: instala torch (CPU) + laya[serve] num venv persistente e
+# baixa o checkpoint multilingual (~650 MB). Leva de 5 a 15 min. Depois é rápido.
+
+services:
+  laya:
+    image: python:3.12-slim
+    container_name: laya
+    restart: unless-stopped
+    environment:
+      LAYA_HOST: "0.0.0.0"
+      LAYA_PORT: "8000"
+      LAYA_DEVICE: "cpu"
+      LAYA_PRELOAD: "1"
+      LAYA_MODELS: "multilingual"          # único checkpoint carregado: cabe em 8 GB e lê português
+      LAYA_DEFAULT_MODEL: "multilingual"
+      LAYA_MAX_LOADED: "1"
+      LAYA_THREADS: "2"                    # = núcleos físicos da KVM 2
+      OMP_NUM_THREADS: "2"
+      LAYA_API_KEY: "${LAYA_API_KEY}"
+      HF_HOME: "/data/hf"
+      PIP_CACHE_DIR: "/data/pip"
+      TORCH_DISABLE_NATIVE_JIT: "1"
+      USE_TF: "0"
+    volumes:
+      - laya-data:/data
+    ports:
+      - "${LAYA_BIND:-127.0.0.1}:8000:8000"
+    mem_limit: 3g
+    command:
+      - sh
+      - -ec
+      - |
+        if [ ! -x /data/venv/bin/laya-serve ]; then
+          echo ">> instalando Laya (primeira vez, demora alguns minutos)"
+          python -m venv /data/venv
+          /data/venv/bin/pip install --upgrade pip
+          /data/venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+          /data/venv/bin/pip install "laya[serve]"
+        fi
+        exec /data/venv/bin/laya-serve
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 900s
+
+volumes:
+  laya-data:
