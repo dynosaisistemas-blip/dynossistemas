@@ -153,28 +153,23 @@ curl -s "http://127.0.0.1:$LAYA_PORT/v1/systemone" \
 # 7. Ligar ao Hermes Agent (skill + variáveis no .env)
 # -----------------------------------------------------------------------------
 log "Procurando o Hermes Agent"
-HERMES_DATA=""
-HERMES_CT=""
-if command -v docker >/dev/null; then
+HERMES_BIN=""; HERMES_CT=""; HERMES_DATA=""
+for cand in "$(command -v hermes 2>/dev/null || true)" /root/.local/bin/hermes /usr/local/bin/hermes \
+            $(find /root/.hermes /opt -maxdepth 5 -type f -name hermes -perm -u+x 2>/dev/null | head -n3); do
+  [ -n "$cand" ] && [ -x "$cand" ] && { HERMES_BIN="$cand"; break; }
+done
+if [ -n "$HERMES_BIN" ]; then
+  HERMES_DATA="${HERMES_HOME:-/root/.hermes}"
+elif command -v docker >/dev/null; then
   HERMES_CT="$(docker ps -a --filter ancestor=nousresearch/hermes-agent --format '{{.Names}}' 2>/dev/null | head -n1 || true)"
-  if [ -z "$HERMES_CT" ]; then
-    HERMES_CT="$(docker ps -a --format '{{.Names}} {{.Image}}' 2>/dev/null | awk '/hermes/ {print $1; exit}' || true)"
-  fi
-  if [ -n "$HERMES_CT" ]; then
-    HERMES_DATA="$(docker inspect "$HERMES_CT" --format '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true)"
-    # volume montado em outro caminho: pega o primeiro bind que termine em .hermes
-    [ -n "$HERMES_DATA" ] || HERMES_DATA="$(docker inspect "$HERMES_CT" --format '{{range .Mounts}}{{.Source}} {{end}}' 2>/dev/null | tr ' ' '\n' | grep '\.hermes$' | head -n1 || true)"
-  fi
+  [ -n "$HERMES_CT" ] && HERMES_DATA="$(docker inspect "$HERMES_CT" --format '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true)"
 fi
-if [ -z "$HERMES_DATA" ]; then
-  for d in /root/.hermes /home/*/.hermes; do [ -d "$d" ] && { HERMES_DATA="$d"; break; }; done
-fi
+[ -n "$HERMES_DATA" ] || { for d in /root/.hermes /home/*/.hermes; do [ -d "$d" ] && { HERMES_DATA="$d"; break; }; done; }
 
 if [ -z "$HERMES_DATA" ]; then
   warn "não achei a pasta ~/.hermes. Instale a skill depois: copie hermes-skill/laya para ~/.hermes/skills/laya"
 else
-  ok "Hermes em: $HERMES_DATA ${HERMES_CT:+(container $HERMES_CT)}"
-  # URL que o Hermes usa: dentro de container -> IP do gateway docker; nativo -> localhost
+  ok "Hermes em: $HERMES_DATA ${HERMES_BIN:+(binário $HERMES_BIN)}${HERMES_CT:+(container $HERMES_CT)}"
   if [ -n "$HERMES_CT" ]; then
     is_ipv4() { [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; }
     GW=""
@@ -214,8 +209,12 @@ SKILL
   touch "$HERMES_DATA/.env"
   sed -i '/^LAYA_BASE_URL=/d;/^LAYA_API_KEY=/d' "$HERMES_DATA/.env"
   printf 'LAYA_BASE_URL=%s\nLAYA_API_KEY=%s\n' "$LAYA_URL" "$LAYA_API_KEY" >> "$HERMES_DATA/.env"
-  ok "skill instalada em $HERMES_DATA/skills/laya e variáveis no .env"
-  [ -n "$HERMES_CT" ] && docker restart "$HERMES_CT" >/dev/null && ok "container $HERMES_CT reiniciado"
+  ok "skill instalada em $HERMES_DATA/skills/laya e variáveis no .env (LAYA_BASE_URL=$LAYA_URL)"
+  if [ -n "$HERMES_BIN" ]; then
+    "$HERMES_BIN" gateway status >/dev/null 2>&1 && { "$HERMES_BIN" gateway restart >/dev/null 2>&1 && ok "gateway do Hermes reiniciado" || true; }
+  elif [ -n "$HERMES_CT" ]; then
+    docker restart "$HERMES_CT" >/dev/null && ok "container $HERMES_CT reiniciado"
+  fi
 fi
 
 cat <<FIM

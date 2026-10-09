@@ -24,42 +24,44 @@ die()  { printf '\033[1;31m    ERRO: %s\033[0m\n' "$*" >&2; exit 1; }
 command -v docker >/dev/null || die "docker não encontrado. Este script é para a VPS com o template Hermes Agent da Hostinger."
 
 # -----------------------------------------------------------------------------
-# 1. Localizar o container do Hermes e a pasta de dados (~/.hermes no host)
+# 1. Localizar o Hermes Agent: instalado direto no sistema (mais comum) ou em
+#    container nousresearch/hermes-agent. A sandbox de terminal que o Hermes
+#    cria (imagem nikolaik/python-nodejs, "sleep infinity") NÃO é o Hermes.
 # -----------------------------------------------------------------------------
-log "Procurando o container do Hermes Agent"
-HERMES_CT="$(docker ps -a --filter ancestor=nousresearch/hermes-agent --format '{{.Names}}' | head -n1 || true)"
-if [ -z "$HERMES_CT" ]; then
-  HERMES_CT="$(docker ps -a --format '{{.Names}} {{.Image}}' | awk '/hermes/ {print $1; exit}' || true)"
-fi
-[ -n "$HERMES_CT" ] || die "nenhum container do Hermes encontrado. Instale o template 'Hermes Agent' no hPanel primeiro."
-ok "container: $HERMES_CT"
-
-HERMES_DATA="$(docker inspect "$HERMES_CT" --format '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{.Source}}{{end}}{{end}}')"
-[ -n "$HERMES_DATA" ] || HERMES_DATA="$HOME/.hermes"
-mkdir -p "$HERMES_DATA"
-ok "pasta de dados do Hermes no host: $HERMES_DATA"
-
-# IP pelo qual o container enxerga o host (gateway da rede Docker dele)
+log "Procurando o Hermes Agent"
 is_ipv4() { [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; }
-DOCKER_GW=""
-NET_MODE="$(docker inspect "$HERMES_CT" --format '{{.HostConfig.NetworkMode}}' 2>/dev/null || true)"
-if [ "$NET_MODE" = "host" ]; then
+HERMES_BIN=""; HERMES_CT=""; HERMES_DATA=""; DOCKER_GW=""
+for cand in "$(command -v hermes 2>/dev/null || true)" /root/.local/bin/hermes /usr/local/bin/hermes \
+            $(find /root/.hermes /opt -maxdepth 5 -type f -name hermes -perm -u+x 2>/dev/null | head -n3); do
+  [ -n "$cand" ] && [ -x "$cand" ] && { HERMES_BIN="$cand"; break; }
+done
+if [ -n "$HERMES_BIN" ]; then
+  HERMES_DATA="${HERMES_HOME:-/root/.hermes}"
   DOCKER_GW="127.0.0.1"
+  ok "Hermes instalado no sistema: $HERMES_BIN (dados em $HERMES_DATA)"
 else
-  for net in $(docker inspect "$HERMES_CT" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null); do
-    for gw in $(docker network inspect "$net" --format '{{range .IPAM.Config}}{{.Gateway}} {{end}}' 2>/dev/null); do
-      if is_ipv4 "$gw"; then DOCKER_GW="$gw"; break 2; fi
+  HERMES_CT="$(docker ps -a --filter ancestor=nousresearch/hermes-agent --format '{{.Names}}' 2>/dev/null | head -n1 || true)"
+  [ -n "$HERMES_CT" ] || die "não achei o Hermes nem no sistema nem em container nousresearch/hermes-agent."
+  HERMES_DATA="$(docker inspect "$HERMES_CT" --format '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{.Source}}{{end}}{{end}}')"
+  [ -n "$HERMES_DATA" ] || HERMES_DATA="$HOME/.hermes"
+  ok "Hermes em container: $HERMES_CT (dados em $HERMES_DATA)"
+  NET_MODE="$(docker inspect "$HERMES_CT" --format '{{.HostConfig.NetworkMode}}' 2>/dev/null || true)"
+  if [ "$NET_MODE" = "host" ]; then
+    DOCKER_GW="127.0.0.1"
+  else
+    for net in $(docker inspect "$HERMES_CT" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null); do
+      for gw in $(docker network inspect "$net" --format '{{range .IPAM.Config}}{{.Gateway}} {{end}}' 2>/dev/null); do
+        if is_ipv4 "$gw"; then DOCKER_GW="$gw"; break 2; fi
+      done
+      cip="$(docker inspect "$HERMES_CT" --format "{{(index .NetworkSettings.Networks \"$net\").IPAddress}}" 2>/dev/null || true)"
+      if is_ipv4 "$cip"; then DOCKER_GW="${cip%.*}.1"; break; fi
     done
-    # rede sem gateway declarado: usa o .1 da sub-rede do container
-    cip="$(docker inspect "$HERMES_CT" --format "{{(index .NetworkSettings.Networks \"$net\").IPAddress}}" 2>/dev/null || true)"
-    if is_ipv4 "$cip"; then DOCKER_GW="${cip%.*}.1"; break; fi
-  done
+    is_ipv4 "$DOCKER_GW" || DOCKER_GW="$(ip -4 addr show docker0 2>/dev/null | awk '/inet / {sub("/.*","",$2); print $2; exit}')"
+    is_ipv4 "$DOCKER_GW" || DOCKER_GW="172.17.0.1"
+  fi
+  ok "o container alcança o host em: $DOCKER_GW"
 fi
-if ! is_ipv4 "$DOCKER_GW"; then
-  DOCKER_GW="$(ip -4 addr show docker0 2>/dev/null | awk '/inet / {sub("/.*","",$2); print $2; exit}')"
-fi
-is_ipv4 "$DOCKER_GW" || DOCKER_GW="172.17.0.1"
-ok "o container alcança o host em: $DOCKER_GW"
+mkdir -p "$HERMES_DATA"
 
 # -----------------------------------------------------------------------------
 # 2. Escolher o modelo conforme a RAM da VPS
@@ -183,7 +185,7 @@ if [ "$TEST_OK" -eq 1 ]; then
 else
   warn "o modelo não respondeu. Últimas linhas do log do Ollama:"
   journalctl -u ollama -n 30 --no-pager || true
-  warn "Vou gravar a configuração do Hermes mesmo assim; teste depois com: docker exec -it $HERMES_CT hermes"
+  warn "Vou gravar a configuração do Hermes mesmo assim; teste depois com: hermes doctor"
 fi
 
 # -----------------------------------------------------------------------------
@@ -196,10 +198,12 @@ CFG="$HERMES_DATA/config.yaml"
 [ -f "$CFG" ] && cp "$CFG" "$CFG.bak.$(date +%Y%m%d%H%M%S)"
 
 hermes_cli() {
-  if docker ps --format '{{.Names}}' | grep -qx "$HERMES_CT"; then
+  if [ -n "$HERMES_BIN" ]; then
+    "$HERMES_BIN" "$@"
+  elif docker ps --format '{{.Names}}' | grep -qx "$HERMES_CT"; then
     docker exec "$HERMES_CT" hermes "$@"
   else
-    docker run --rm -v "$HERMES_DATA:/opt/data" nousresearch/hermes-agent "$@"
+    return 1
   fi
 }
 
@@ -234,20 +238,31 @@ fi
 ok ".env: HERMES_API_TIMEOUT=1800"
 
 # -----------------------------------------------------------------------------
-# 7. Reiniciar o Hermes e testar de dentro do container
+# 7. Reiniciar o Hermes para ler a nova configuração
 # -----------------------------------------------------------------------------
-log "Reiniciando o container $HERMES_CT"
-docker restart "$HERMES_CT" >/dev/null
-sleep 5
-
-log "Testando o acesso ao Ollama de DENTRO do container"
-if docker exec "$HERMES_CT" sh -c "command -v curl >/dev/null && curl -fsS ${BASE_URL%/v1}/api/tags >/dev/null" 2>/dev/null; then
-  ok "o container alcança o Ollama em $BASE_URL"
-elif docker exec "$HERMES_CT" python3 -c "import urllib.request;urllib.request.urlopen('${BASE_URL%/v1}/api/tags',timeout=10)" 2>/dev/null; then
-  ok "o container alcança o Ollama em $BASE_URL"
+if [ -n "$HERMES_BIN" ]; then
+  log "Reiniciando o gateway do Hermes (se estiver rodando)"
+  if "$HERMES_BIN" gateway status >/dev/null 2>&1; then
+    "$HERMES_BIN" gateway restart >/dev/null 2>&1 && ok "gateway reiniciado" || warn "não consegui reiniciar o gateway; rode: hermes gateway restart"
+  else
+    for u in $(systemctl list-units --all --no-legend 2>/dev/null | awk '/hermes/ {print $1}'); do
+      systemctl restart "$u" 2>/dev/null && ok "serviço $u reiniciado" || true
+    done
+    warn "gateway não estava ativo; para ligar: hermes gateway run (ou hermes gateway setup)"
+  fi
+  COMO_TESTAR="hermes"
 else
-  warn "não consegui confirmar o acesso de dentro do container. Teste manualmente:"
-  warn "  docker exec -it $HERMES_CT hermes"
+  log "Reiniciando o container $HERMES_CT"
+  docker restart "$HERMES_CT" >/dev/null
+  sleep 5
+  log "Testando o acesso ao Ollama de DENTRO do container"
+  if docker exec "$HERMES_CT" sh -c "command -v curl >/dev/null && curl -fsS ${BASE_URL%/v1}/api/tags >/dev/null" 2>/dev/null \
+     || docker exec "$HERMES_CT" python3 -c "import urllib.request;urllib.request.urlopen('${BASE_URL%/v1}/api/tags',timeout=10)" 2>/dev/null; then
+    ok "o container alcança o Ollama em $BASE_URL"
+  else
+    warn "não consegui confirmar o acesso de dentro do container."
+  fi
+  COMO_TESTAR="docker exec -it $HERMES_CT hermes"
 fi
 
 cat <<FIM
@@ -256,11 +271,11 @@ cat <<FIM
  PRONTO.
    Modelo:    $MODEL_CTX  (Ollama, local, sem custo de API)
    Endpoint:  $BASE_URL
-   Container: $HERMES_CT
+   Hermes:    ${HERMES_BIN:-container $HERMES_CT}
    Dados:     $HERMES_DATA  (config.yaml / .env)
 
- Para conversar:   docker exec -it $HERMES_CT hermes
- Ver logs:         docker logs -f $HERMES_CT
+ Para conversar:   $COMO_TESTAR
+ Diagnóstico:      ${HERMES_BIN:-hermes} doctor
  Trocar modelo:    dentro do chat, /model custom:<nome>
  Modelos locais:   ollama list
 =============================================================================
