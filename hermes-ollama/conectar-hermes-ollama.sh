@@ -68,16 +68,20 @@ mkdir -p "$HERMES_DATA"
 # -----------------------------------------------------------------------------
 RAM_GB=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 / 1024 ))
 if [ -z "${MODEL:-}" ]; then
-  if   [ "$RAM_GB" -ge 24 ]; then MODEL="llama3.1:8b";  NUM_CTX="${NUM_CTX:-65536}"
-  elif [ "$RAM_GB" -ge 14 ]; then MODEL="llama3.1:8b";  NUM_CTX="${NUM_CTX:-32768}"
-  elif [ "$RAM_GB" -ge 10 ]; then MODEL="llama3.2:3b";  NUM_CTX="${NUM_CTX:-32768}"
-  else                            MODEL="llama3.2:3b";  NUM_CTX="${NUM_CTX:-16384}"
+  # O Hermes exige no mínimo 64k de contexto. O cache KV fica na RAM (sem GPU),
+  # então em VPS pequena ele é quantizado em 4 bits para caber.
+  if   [ "$RAM_GB" -ge 24 ]; then MODEL="llama3.1:8b";  KV_TYPE="${KV_TYPE:-q8_0}"
+  elif [ "$RAM_GB" -ge 14 ]; then MODEL="llama3.1:8b";  KV_TYPE="${KV_TYPE:-q4_0}"
+  elif [ "$RAM_GB" -ge 10 ]; then MODEL="llama3.2:3b";  KV_TYPE="${KV_TYPE:-q8_0}"
+  else                            MODEL="llama3.2:3b";  KV_TYPE="${KV_TYPE:-q4_0}"
   fi
 fi
-NUM_CTX="${NUM_CTX:-16384}"
+NUM_CTX="${NUM_CTX:-65536}"
+KV_TYPE="${KV_TYPE:-q8_0}"
+[ "$NUM_CTX" -ge 65536 ] || warn "contexto $NUM_CTX abaixo do mínimo de 64k que o Hermes exige"
 TAG_CTX="$(( NUM_CTX / 1024 ))k"
 MODEL_CTX="$(echo "$MODEL" | tr ':' '-')-${TAG_CTX}"   # ex: llama3.1-8b-32k
-log "RAM detectada: ${RAM_GB} GB -> modelo: $MODEL (contexto ${NUM_CTX} tokens, nome final: $MODEL_CTX)"
+log "RAM detectada: ${RAM_GB} GB -> modelo: $MODEL (contexto ${NUM_CTX} tokens, cache KV $KV_TYPE, nome final: $MODEL_CTX)"
 
 # -----------------------------------------------------------------------------
 # 2b. Swap de 4 GB (evita o OOM killer derrubar o Ollama em VPS com pouca RAM)
@@ -124,7 +128,7 @@ Environment="OLLAMA_KEEP_ALIVE=24h"
 Environment="OLLAMA_NUM_PARALLEL=1"
 Environment="OLLAMA_MAX_LOADED_MODELS=1"
 Environment="OLLAMA_FLASH_ATTENTION=1"
-Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
+Environment="OLLAMA_KV_CACHE_TYPE=$KV_TYPE"
 Environment="OLLAMA_LOAD_TIMEOUT=15m"
 CONF
 systemctl daemon-reload
@@ -209,7 +213,8 @@ hermes_cli() {
 
 if hermes_cli config set model.provider custom \
    && hermes_cli config set model.base_url "$BASE_URL" \
-   && hermes_cli config set model.default "$MODEL_CTX"; then
+   && hermes_cli config set model.default "$MODEL_CTX" \
+   && hermes_cli config set model.context_length "$NUM_CTX"; then
   ok "config gravada via 'hermes config set'"
 else
   warn "'hermes config set' falhou; escrevendo o bloco model: direto no config.yaml"
@@ -222,6 +227,7 @@ model:
   default: "$MODEL_CTX"
   provider: "custom"
   base_url: "$BASE_URL"
+  context_length: $NUM_CTX
 YAML
   mv "$CFG.tmp" "$CFG"
   ok "config.yaml atualizado"
