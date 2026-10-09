@@ -157,7 +157,14 @@ HERMES_DATA=""
 HERMES_CT=""
 if command -v docker >/dev/null; then
   HERMES_CT="$(docker ps -a --filter ancestor=nousresearch/hermes-agent --format '{{.Names}}' 2>/dev/null | head -n1 || true)"
-  [ -n "$HERMES_CT" ] && HERMES_DATA="$(docker inspect "$HERMES_CT" --format '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{.Source}}{{end}}{{end}}')"
+  if [ -z "$HERMES_CT" ]; then
+    HERMES_CT="$(docker ps -a --format '{{.Names}} {{.Image}}' 2>/dev/null | awk '/hermes/ {print $1; exit}' || true)"
+  fi
+  if [ -n "$HERMES_CT" ]; then
+    HERMES_DATA="$(docker inspect "$HERMES_CT" --format '{{range .Mounts}}{{if eq .Destination "/opt/data"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true)"
+    # volume montado em outro caminho: pega o primeiro bind que termine em .hermes
+    [ -n "$HERMES_DATA" ] || HERMES_DATA="$(docker inspect "$HERMES_CT" --format '{{range .Mounts}}{{.Source}} {{end}}' 2>/dev/null | tr ' ' '\n' | grep '\.hermes$' | head -n1 || true)"
+  fi
 fi
 if [ -z "$HERMES_DATA" ]; then
   for d in /root/.hermes /home/*/.hermes; do [ -d "$d" ] && { HERMES_DATA="$d"; break; }; done
