@@ -191,7 +191,7 @@ else
   fi
   mkdir -p "$HERMES_DATA/skills/laya"
   SKILL_SRC="$(dirname "$0")/hermes-skill/laya/SKILL.md"
-  SKILL_URL="https://raw.githubusercontent.com/dynosaisistemas-blip/dynossistemas/master/laya/hermes-skill/laya/SKILL.md"
+  SKILL_URL="https://raw.githubusercontent.com/dynosaisistemas-blip/dynossistemas/master/laya/hermes-skill/laya/SKILL.md?$(date +%s)"
   if [ -f "$SKILL_SRC" ]; then
     cp "$SKILL_SRC" "$HERMES_DATA/skills/laya/SKILL.md"
   elif curl -fsSL "$SKILL_URL" -o "$HERMES_DATA/skills/laya/SKILL.md.tmp" 2>/dev/null; then
@@ -214,6 +214,7 @@ SKILL
   # grava URL e chave direto na skill (a sandbox Docker não vê o .env do host)
   sed -i "s|__LAYA_URL__|$LAYA_URL|g; s|__LAYA_KEY__|$LAYA_API_KEY|g; s|\$LAYA_BASE_URL|$LAYA_URL|g; s|\$LAYA_API_KEY|$LAYA_API_KEY|g" "$HERMES_DATA/skills/laya/SKILL.md"
   chmod 600 "$HERMES_DATA/skills/laya/SKILL.md"
+  grep -q '__LAYA_\|\$LAYA_' "$HERMES_DATA/skills/laya/SKILL.md" && warn "a skill ainda tem placeholders sem substituir" || ok "skill com URL e chave fixas: $(grep -m1 -o 'http://[0-9.]*:[0-9]*/v1/systemone' "$HERMES_DATA/skills/laya/SKILL.md")"
   touch "$HERMES_DATA/.env"
   sed -i '/^LAYA_BASE_URL=/d;/^LAYA_API_KEY=/d' "$HERMES_DATA/.env"
   printf 'LAYA_BASE_URL=%s\nLAYA_API_KEY=%s\n' "$LAYA_URL" "$LAYA_API_KEY" >> "$HERMES_DATA/.env"

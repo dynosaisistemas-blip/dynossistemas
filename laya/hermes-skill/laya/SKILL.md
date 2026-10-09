@@ -5,6 +5,11 @@ description: Decisões tipadas rápidas e sem custo (classificar, pontuar, sim/n
 
 # Laya: decisões tipadas locais
 
+> **Como chamar, sem rodeios:** faça um `curl` para `__LAYA_URL__/v1/systemone`
+> com o header `Authorization: Bearer __LAYA_KEY__`. Esses dois valores já são os
+> definitivos. **Não procure variáveis de ambiente, arquivos `.env` nem portas abertas.**
+> Se o `curl` falhar, informe o erro exato em vez de classificar por conta própria.
+
 O Laya (Convai Innovations) é um modelo System-1: recebe um **estado** (texto ou JSON)
 e **perguntas tipadas** e devolve respostas com probabilidades calibradas em ~0,3 s na CPU.
 Não escreve texto. Use-o quando a tarefa é **decidir**, não **redigir**.
